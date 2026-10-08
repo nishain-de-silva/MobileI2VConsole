@@ -1,0 +1,212 @@
+name: Diagnose MobileI2V Crash
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  diagnose:
+    name: Install APK and Capture Crash Log
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      # ------------------------------------------------------------
+      # 1. Download the EXISTING APK artifact
+      # ------------------------------------------------------------
+      - name: Download existing APK artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p apk-artifact
+
+          echo "Downloading existing artifact..."
+          echo "Run ID: 37780337033"
+          echo "Artifact: MobileI2VConsole-APK-with-Models"
+
+          gh run download 37780337033 \
+            --repo "${{ github.repository }}" \
+            --name "MobileI2VConsole-APK-with-Models" \
+            --dir apk-artifact
+
+          echo
+          echo "=== Downloaded files ==="
+          find apk-artifact -type f -exec ls -lh {} \;
+
+      # ------------------------------------------------------------
+      # 2. Find the signed APK
+      # ------------------------------------------------------------
+      - name: Locate APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK=$(find apk-artifact \
+            -type f \
+            -name '*-Signed.apk' \
+            | head -n 1)
+
+          if [ -z "$APK" ]; then
+            echo "::error::Signed APK not found."
+            echo "Available APK files:"
+            find apk-artifact -type f -name '*.apk' -print
+            exit 1
+          fi
+
+          echo "APK=$APK" >> "$GITHUB_ENV"
+
+          echo "Found APK:"
+          ls -lh "$APK"
+
+      # ------------------------------------------------------------
+      # 3. Set up Android emulator
+      # ------------------------------------------------------------
+      - name: Start Android emulator and test app
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          ram-size: 4096M
+          disk-size: 16G
+
+          emulator-options: >
+            -no-window
+            -gpu swiftshader_indirect
+            -noaudio
+            -no-boot-anim
+
+          disable-animations: true
+
+          script: |
+            set -o pipefail
+
+            echo "========================================"
+            echo "ANDROID DEVICE"
+            echo "========================================"
+
+            adb shell getprop ro.build.version.release
+            adb shell getprop ro.build.version.sdk
+            adb shell getprop ro.product.model
+            adb shell getprop ro.product.cpu.abi
+
+            echo
+            echo "========================================"
+            echo "INSTALLING APK"
+            echo "========================================"
+
+            adb install -r "$GITHUB_WORKSPACE/$APK"
+
+            echo
+            echo "========================================"
+            echo "INSTALLED PACKAGE"
+            echo "========================================"
+
+            adb shell dumpsys package com.mobilei2v.console \
+              > package-before-launch.txt || true
+
+            echo
+            echo "========================================"
+            echo "CLEARING LOGCAT"
+            echo "========================================"
+
+            adb logcat -c
+
+            echo
+            echo "========================================"
+            echo "STARTING APPLICATION"
+            echo "========================================"
+
+            adb shell am force-stop com.mobilei2v.console
+
+            adb shell monkey \
+              -p com.mobilei2v.console \
+              1
+
+            echo
+            echo "Application launched."
+            echo "Waiting 30 seconds..."
+
+            sleep 30
+
+            echo
+            echo "========================================"
+            echo "LOGCAT"
+            echo "========================================"
+
+            adb logcat -d > logcat.txt
+
+            echo
+            echo "========================================"
+            echo "ERROR / CRASH LINES"
+            echo "========================================"
+
+            grep -Ei \
+              'FATAL EXCEPTION|AndroidRuntime|OutOfMemoryError|'
+              'SIGABRT|SIGSEGV|SIGBUS|'
+              'Abort message|Fatal signal|'
+              'Exception|Error|crash|'
+              'libonnxruntime|onnxruntime|'
+              'MobileI2V|com.mobilei2v.console' \
+              logcat.txt \
+              > crash-summary.txt || true
+
+            cat crash-summary.txt
+
+            echo
+            echo "========================================"
+            echo "MEMORY INFORMATION"
+            echo "========================================"
+
+            adb shell dumpsys meminfo com.mobilei2v.console \
+              > meminfo.txt || true
+
+            cat meminfo.txt
+
+            echo
+            echo "========================================"
+            echo "PACKAGE INFORMATION"
+            echo "========================================"
+
+            adb shell dumpsys package com.mobilei2v.console \
+              > package-after-launch.txt || true
+
+            echo
+            echo "========================================"
+            echo "PROCESSES"
+            echo "========================================"
+
+            adb shell ps -A \
+              | grep -i mobilei2v \
+              > processes.txt || true
+
+            cat processes.txt
+
+            echo
+            echo "========================================"
+            echo "DONE"
+            echo "========================================"
+
+      # ------------------------------------------------------------
+      # 4. Upload diagnostics even if emulator/app fails
+      # ------------------------------------------------------------
+      - name: Upload crash diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MobileI2V-Crash-Diagnostics
+          path: |
+            logcat.txt
+            crash-summary.txt
+            meminfo.txt
+            package-before-launch.txt
+            package-after-launch.txt
+            processes.txt
+          if-no-files-found: warn
+          retention-days: 7
