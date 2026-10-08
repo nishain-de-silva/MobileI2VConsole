@@ -21,7 +21,7 @@
                 <toolkit:MediaElement x:Name="VideoPlayer"
                               Source="{Binding VideoSource}"
                               Aspect="AspectFit"
-                              IsLooping="True"
+                              ShouldLoopPlayback="True"
                               ShouldAutoPlay="True"
                               VerticalOptions="Fill"
                               HorizontalOptions="Fill" />
