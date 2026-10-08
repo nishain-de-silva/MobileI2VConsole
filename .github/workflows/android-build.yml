@@ -1,5 +1,5 @@
 
-name: Build MobileI2VConsole APK
+name: Build MobileI2VConsole with ONNX Models
 
 on:
   workflow_dispatch:
@@ -12,65 +12,102 @@ permissions:
 
 jobs:
   build-android:
-    name: Build Android APK
-    runs-on: windows-latest
-    timeout-minutes: 45
+    name: Convert Models and Build APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install .NET 10 SDK
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up .NET 10
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: "10.0.x"
 
-      - name: Install .NET MAUI Android workload
+      - name: Install Android workload
         run: dotnet workload install maui-android
 
-      - name: Restore dependencies
-        run: dotnet restore src/MobileI2VConsole/MobileI2VConsole.csproj
-
-      - name: Publish Android APK
-        run: >-
-          dotnet publish
-          src/MobileI2VConsole/MobileI2VConsole.csproj
-          -f net10.0-android
-          -c Release
-          -p:AndroidPackageFormat=apk
-
-      - name: Collect APK files
-        shell: pwsh
+      - name: Install model conversion dependencies
         run: |
-          $output = "artifacts"
-          New-Item -ItemType Directory -Force -Path $output | Out-Null
+          python -m pip install --upgrade pip
+          python -m pip install -r scripts/convert/requirements.txt
 
-          $apks = Get-ChildItem `
-            -Path "src/MobileI2VConsole/bin/Release/net10.0-android" `
-            -Filter "*.apk" `
-            -File `
-            -Recurse
+      - name: Convert all four models to ONNX
+        run: |
+          python scripts/convert/convert_all.py \
+            --output src/MobileI2VConsole/Resources/Raw/models/ \
+            --device cpu
 
-          if (-not $apks) {
-            Write-Host "No APK found. Publish output follows:"
-            Get-ChildItem `
-              -Path "src/MobileI2VConsole/bin/Release/net10.0-android" `
-              -Recurse `
-              -ErrorAction SilentlyContinue |
-              Select-Object FullName
+      - name: Verify converted models
+        shell: bash
+        run: |
+          set -euo pipefail
+          MODEL_DIR="src/MobileI2VConsole/Resources/Raw/models"
 
-            throw "Build completed without a discoverable APK."
-          }
+          for file in \
+            vae_encoder.onnx \
+            qwen2_encoder.onnx \
+            mobilei2v_unet.onnx \
+            turbo_vaed.onnx \
+            models_manifest.json
+          do
+            if [ ! -s "$MODEL_DIR/$file" ]; then
+              echo "::error::Missing or empty model file: $file"
+              exit 1
+            fi
+            ls -lh "$MODEL_DIR/$file"
+          done
 
-          foreach ($apk in $apks) {
-            Copy-Item $apk.FullName -Destination $output
-            Write-Host "Collected: $($apk.Name)"
-          }
+          du -sh "$MODEL_DIR"
 
-      - name: Upload APK artifact
+      - name: Restore Android project
+        run: |
+          dotnet restore \
+            src/MobileI2VConsole/MobileI2VConsole.csproj
+
+      - name: Publish APK with bundled models
+        run: |
+          dotnet publish \
+            src/MobileI2VConsole/MobileI2VConsole.csproj \
+            -f net10.0-android \
+            -c Release \
+            -p:AndroidPackageFormat=apk
+
+      - name: Collect APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+
+          find src/MobileI2VConsole/bin/Release/net10.0-android \
+            -type f -name '*.apk' \
+            -exec cp {} artifacts/ \;
+
+          if ! find artifacts -type f -name '*.apk' \
+            | grep -q .; then
+            echo "::error::No APK was produced"
+            exit 1
+          fi
+
+          ls -lh artifacts/
+
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: MobileI2VConsole-Android-APK
+          name: MobileI2VConsole-APK-with-Models
           path: artifacts/*.apk
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 1
+          compression-level: 0
