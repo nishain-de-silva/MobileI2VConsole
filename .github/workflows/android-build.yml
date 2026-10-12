@@ -94,23 +94,25 @@ jobs:
           set -euo pipefail
           mkdir -p artifacts
 
-          find src/MobileI2VConsole/bin/Release/net10.0-android \
-            -type f -name '*.apk' \
-            -exec cp {} artifacts/ \;
+          SIGNED_APK=$(find src/MobileI2VConsole/bin/Release/net10.0-android \
+            -type f -name '*-Signed.apk' \
+            | head -n 1)
 
-          if ! find artifacts -type f -name '*.apk' \
-            | grep -q .; then
-            echo "::error::No APK was produced"
+          if [ -z "$SIGNED_APK" ]; then
+            echo "::error::Signed APK was not produced"
             exit 1
           fi
 
+          cp "$SIGNED_APK" artifacts/
+
+          echo "=== APK to upload ==="
           ls -lh artifacts/
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: MobileI2VConsole-APK-with-Models
-          path: artifacts/*.apk
+          path: artifacts/*-Signed.apk
           if-no-files-found: error
           retention-days: 1
           compression-level: 0

@@ -10,6 +10,7 @@
     <Color x:Key="PrimaryLight">#EADDFF</Color>
     <Color x:Key="Secondary">#625B71</Color>
     <Color x:Key="SecondaryDark">#4A4458</Color>
+    <Color x:Key="PageBackgroundColor">#FFFFFF</Color>
     <Color x:Key="SecondaryLight">#E8DEF8</Color>
     <Color x:Key="Tertiary">#7D5260</Color>
     <Color x:Key="TertiaryDark">#633B48</Color>
